@@ -28,7 +28,7 @@ script.on_configuration_changed(function(_event)
   unlock_personal_logistics()
 end)
 
-script.on_player_created(function(_event)
+script.on_event(defines.events.on_player_created, function(_event)
   unlock_personal_logistics()
 end)
 

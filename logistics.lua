@@ -236,6 +236,62 @@ end
 -- Per-player fulfillment
 ----------------------------------------------------------------------------
 
+--- Normalize a requester point's requests into CompiledLogisticFilter-shaped
+--- tables ({ type, name, quality, comparator, count, max_count }).
+---
+--- Factorio 2.x exposes requests two ways, and which one is populated depends
+--- on how the request was made:
+--- - `point.filters` (CompiledLogisticFilter) is only set for legacy flat
+---   request lists. It is NIL when the point uses sections — the default of
+---   the 2.x personal logistics UI. Iterating it blindly is what crashed this
+---   mod on load ("bad argument #1 to 'pairs'").
+--- - `point.sections[*].filters` (LogisticFilter) is the sections shape:
+---   { value = SignalFilter, min, max }. Inactive sections are skipped and
+---   each section's multiplier is applied, matching what the game itself
+---   requests.
+--- Section slots are mapped onto the compiled shape so the fulfillment loop
+--- below works on exactly one representation (and the quality/comparator
+--- rules of filter_quality and is_usable_filter keep applying unchanged).
+---@param point LuaLogisticPoint
+---@return table[]
+local function collect_requests(point)
+  if point.filters ~= nil then
+    return point.filters
+  end
+
+  local requests = {}
+  for _, section in pairs(point.sections) do
+    if section.active then
+      local multiplier = section.multiplier or 1
+      for _, slot in pairs(section.filters) do
+        local value = slot.value
+        if value ~= nil and value.name ~= nil
+            and (value.type == nil or value.type == "item") then
+          -- SignalFilter.quality is nil ("any"), a plain name, or a
+          -- QualityCondition { name, comparator }. Flatten it to the
+          -- compiled shape: name string (nil = any) + comparator.
+          local quality = value.quality
+          local quality_name = quality
+          local comparator = nil
+          if type(quality) == "table" then
+            quality_name = quality.name
+            comparator = quality.comparator
+          end
+          requests[#requests + 1] = {
+            type = value.type,
+            name = value.name,
+            quality = quality_name,
+            comparator = comparator,
+            count = math.floor((slot.min or 0) * multiplier),
+            max_count = slot.max ~= nil and math.floor(slot.max * multiplier) or nil,
+          }
+        end
+      end
+    end
+  end
+  return requests
+end
+
 --- Process one player's personal logistic requests. Early-outs at the first
 --- cheap failure (setting -> character -> requester point -> point.enabled).
 --- All returns here are function-local, so a broken player can never abort
@@ -278,7 +334,7 @@ local function process_player(player)
   -- scanned — mixed contents give no routing target.
   local container_index = build_container_index(player.surface)
 
-  for _, filter in pairs(point.filters) do
+  for _, filter in pairs(collect_requests(point)) do
     if not is_usable_filter(filter) then
       goto continue
     end
