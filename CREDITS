@@ -1,0 +1,12 @@
+# Credits
+
+Fulfillment-loop patterns informed by:
+
+- **global-storage** by charlesbl — <https://github.com/charlesbl/global-storage>
+- **item-network-sa-continued** by restjack — <https://github.com/restjack/item-network-sa-continued>
+
+Both mods target Factorio 2.1 and run in production; their request-reading,
+quality-aware counting, cursor-guard, and safe transfer-then-remove patterns
+informed this mod's implementation. Their bugs (notably a bare `return` inside
+the per-player loop aborting all remaining players) were deliberately not
+copied.
