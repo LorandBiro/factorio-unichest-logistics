@@ -1,9 +1,11 @@
--- Unichest Logistics — personal logistic request fulfillment from linked
--- containers.
+-- Unichest Logistics — personal logistic request fulfillment and trash
+-- routing from Unichests (single-assigned-type linked containers).
 --
--- Intentionally small and READ-ONLY towards the world except for the single
--- safe transfer step (insert into player first, then remove exactly what was
--- inserted from the source container).
+-- Intentionally small and READ-ONLY towards the world except for the two
+-- safe transfer steps (supply: insert into player first, then remove exactly
+-- what was inserted from the source Unichest; trash: whole-stack
+-- transfer_from_stack into the matching Unichest, unmatched stacks stay in
+-- the trash slot).
 --
 -- Fulfillment-loop patterns informed by "global-storage" by charlesbl and
 -- "item-network-sa-continued" by restjack (see CREDITS).
@@ -16,11 +18,23 @@ local logistics = {}
 -- (see find_source) instead of probing other inventory indices.
 local CHEST_INVENTORY = defines.inventory.chest
 
+-- Unichest is the ONLY container this mod talks to. Each Unichest has exactly
+-- one assigned item type, stored as inventory slot filters (Unichest's
+-- scripts/chestutil.lua reads it the same way we do below). That assigned
+-- type (item + quality) is the entire routing contract — and the reason this
+-- mod hard-depends on Unichest: a generic linked container can hold mixed
+-- contents, so there is no way to know where a trashed item belongs.
+local UNICHEST_NAME = "zy-unichest"
+
+-- The personal logistics trash slots (the engine moves trashed items here).
+local TRASH_INVENTORY = defines.inventory.character_trash
+
 ----------------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------------
 
---- Normalize a request's quality to a plain string.
+--- Normalize a filter's quality (request filter or Unichest slot filter) to
+--- a plain string.
 --- `filter.quality == nil` means "any quality" in the engine; this mod
 --- resolves it to "normal" (both reference mods do the same).
 --- KNOWN LIMITATION: a request for "any quality" is thus satisfied with
@@ -80,40 +94,66 @@ local function count_in_inventory(inv, item_name, quality)
   return total
 end
 
---- Locate `item_name` (of exactly `quality`) in the linked containers.
---- Result is memoized in `cache` under "item|quality" so each item is only
---- located once per player run: { inventory, available }.
---- First container holding the item wins; if it runs dry mid-run the rest is
---- picked up on the next 30-tick pass.
----@param containers table Array of LuaEntity (linked-container)
----@param item_name string
----@param quality string
----@param cache table
----@return { inventory: LuaInventory|nil, available: integer }
-local function find_source(containers, item_name, quality, cache)
-  local key = item_name .. "|" .. quality
-  local memo = cache[key]
-  if memo ~= nil then
-    return memo
-  end
+--- Build a per-pass index of Unichests by their assigned item type.
+--- Key: "item|quality" (the same keying Unichest uses for link IDs).
+--- Value: { entity, inventory } — the FIRST Unichest claiming that type wins.
+---
+--- Rules (all deliberate):
+--- - A nil slot filter means "no assigned type": the Unichest is skipped
+---   entirely. We do NOT guess a default item (Unichest's own getItemFilter
+---   fallback does that with a warning — wrong fit for routing).
+--- - Multiple Unichests can share one linked inventory (same `link_id`);
+---   dedupe by `link_id` (first wins) so availability is not over-counted.
+---@param surface LuaSurface
+---@return table<string, { entity: LuaEntity, inventory: LuaInventory }>
+local function build_container_index(surface)
+  local index = {}
+  local seen_links = {}
 
-  for _, entity in pairs(containers) do
-    if entity.valid then
-      local inv = entity.get_inventory(CHEST_INVENTORY)
+  for _, entity in pairs(surface.find_entities_filtered { name = UNICHEST_NAME }) do
+    local link_id = entity.link_id
+    if link_id == nil or not seen_links[link_id] then
+      -- Unichest's integration surface: the assigned type lives in slot
+      -- filter 1 of the output inventory (type "with_filters_and_bar").
+      local inv = entity.get_output_inventory() or entity.get_inventory(CHEST_INVENTORY)
       if inv ~= nil then
-        local available = count_in_inventory(inv, item_name, quality)
-        if available > 0 then
-          memo = { inventory = inv, available = available }
-          cache[key] = memo
-          return memo
+        local slot_filter = inv.get_filter(1)
+        if slot_filter ~= nil and slot_filter.name ~= nil then
+          -- Claim the link only once the entity actually contributes a type,
+          -- so a filter-less sibling never hides a filtered one sharing the
+          -- same link_id.
+          if link_id ~= nil then
+            seen_links[link_id] = true
+          end
+          local key = slot_filter.name .. "|" .. filter_quality(slot_filter)
+          if index[key] == nil then
+            index[key] = { entity = entity, inventory = inv }
+          end
         end
       end
     end
   end
 
-  memo = { inventory = nil, available = 0 }
-  cache[key] = memo
-  return memo
+  return index
+end
+
+--- Look up the Unichest assigned to exactly `item_name` + `quality` and count
+--- what its shared inventory can currently offer. Pure index lookup — no
+--- entity loop, no content-scanning heuristic. Availability is recomputed per
+--- call, so a source that runs dry mid-run is re-counted naturally.
+---@param index table "item|quality" -> { entity, inventory }
+---@param item_name string
+---@param quality string
+---@return { inventory: LuaInventory|nil, available: integer }
+local function find_source(index, item_name, quality)
+  local target = index[item_name .. "|" .. quality]
+  if target == nil then
+    return { inventory = nil, available = 0 }
+  end
+  return {
+    inventory = target.inventory,
+    available = count_in_inventory(target.inventory, item_name, quality),
+  }
 end
 
 --- Transfer up to `wanted` items from the source inventory into the player.
@@ -147,6 +187,49 @@ local function transfer_to_player(source, item_name, quality, wanted, ammo_inv, 
   end
 
   return inserted
+end
+
+----------------------------------------------------------------------------
+-- Trash routing
+----------------------------------------------------------------------------
+
+--- Route the player's personal-logistics trash into matching Unichests.
+--- One call per player per pass, after the request loop.
+---
+--- Rules (all safety-critical):
+--- - NEVER touch stacks that carry an equipped equipment grid (armor with
+---   modules etc.) — the guard mirrors item-network-sa-continued's
+---   trash_to_network (NetworkChest.lua ~lines 404-417).
+--- - Whole-stack moves only, via `transfer_from_stack`: insert-first and
+---   lossless (whatever does not fit stays in the trash stack).
+--- - No matching Unichest -> the stack STAYS in the trash slot, visible to
+---   the player. Never remove it, never move it back to the main inventory
+---   (the engine would re-trash it, causing endless churn). The mod never
+---   destroys or re-invents trash.
+---@param player LuaPlayer
+---@param container_index table
+local function route_trash(player, container_index)
+  local trash_inv = player.get_inventory(TRASH_INVENTORY)
+  if trash_inv == nil then
+    return
+  end
+
+  for i = 1, #trash_inv do
+    local stack = trash_inv[i]
+    if stack.valid_for_read then
+      local equipped = stack.item_number ~= nil and stack.grid ~= nil and #stack.grid.equipment > 0
+      if not equipped then
+        local target = container_index[stack.name .. "|" .. stack.quality.name]
+        if target ~= nil then
+          -- Insert-first whole-stack transfer: preserves item data (durability,
+          -- ammo, custom data), no dupes, no loss. Partial fit leaves the
+          -- remainder in the trash slot for the next pass.
+          target.inventory.transfer_from_stack(stack)
+        end
+        -- No target: leave the stack in the trash slot (see rules above).
+      end
+    end
+  end
 end
 
 ----------------------------------------------------------------------------
@@ -189,13 +272,11 @@ local function process_player(player)
   -- (e.g. while placing it), delivering more this tick can double-deliver
   -- relative to what the player sees. Checked per request below.
 
-  -- Container list is built once per player run (fine at a 30-tick cadence).
-  -- Type-based on purpose: works with Unichest AND any other linked-chest mod
-  -- (e.g. Warehousing's linked warehouse).
-  local containers = player.surface.find_entities_filtered { type = "linked-container" }
-
-  -- Memoized location results: "item|quality" -> { inventory, available }.
-  local source_cache = {}
+  -- Unichest index is built once per player run (fine at a 30-tick cadence).
+  -- Unichest-ONLY contract: routing keys off each Unichest's assigned item
+  -- type ("item|quality" slot filter). Generic linked containers are not
+  -- scanned — mixed contents give no routing target.
+  local container_index = build_container_index(player.surface)
 
   for _, filter in pairs(point.filters) do
     if not is_usable_filter(filter) then
@@ -226,7 +307,7 @@ local function process_player(player)
       goto continue
     end
 
-    local source = find_source(containers, filter.name, quality, source_cache)
+    local source = find_source(container_index, filter.name, quality)
     if source.inventory == nil or source.available <= 0 then
       goto continue
     end
@@ -240,15 +321,11 @@ local function process_player(player)
     ::continue::
   end
 
-  -- TODO (v2, deliberately NOT in v1): trash handling.
-  -- Intended future behavior: move the player's trash stacks
-  -- (player.get_inventory(defines.inventory.character_trash)) into linked
-  -- containers whose filter matches the trash stack — but ONLY after an
-  -- equipment-grid guard: skip (and report) stacks that carry equipment,
-  -- i.e. `stack.item_number ~= nil and stack.grid ~= nil and #stack.grid.equipment > 0`,
-  -- exactly as item-network-sa-continued does in NetworkChest.lua
-  -- trash_to_network (~lines 411-418). Trash must never swallow
-  -- partially-equipped items.
+  -- Trash routing: once per player per pass. Placed after the request loop on
+  -- purpose, so the setting / character / point.enabled early-outs above
+  -- still gate it (a player with personal logistics off gets no trash routing
+  -- either).
+  route_trash(player, container_index)
 end
 
 ----------------------------------------------------------------------------

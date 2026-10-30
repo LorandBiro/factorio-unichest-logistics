@@ -1,9 +1,9 @@
 {
   "name": "unichest-logistics",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "title": "Unichest Logistics",
   "author": "LorandBiro",
   "factorio_version": "2.1",
-  "dependencies": ["base >= 2.0", "? Unichest >= 1.0.10"],
-  "description": "Fulfills your personal logistic requests from linked containers (Unichests) before robots exist. Early-game personal logistics; robot malls are still better later."
+  "dependencies": ["base >= 2.0", "Unichest >= 1.0.10"],
+  "description": "Fulfills your personal logistic requests and routes your personal logistics trash from Unichests (single-assigned-type linked containers) before robots exist. Early-game personal logistics; robot malls are still better later."
 }

@@ -1,4 +1,24 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2026-10-30
+  Major features:
+    - Personal logistics trash routing: items in your personal logistics trash slots are moved into
+      the Unichest assigned to that exact item type (item + quality). If no matching Unichest
+      exists, the item stays in the trash slot, visible, until one appears — trash is never
+      destroyed or moved back to the main inventory. Stacks with equipped equipment grids (e.g.
+      armor with modules) are never touched.
+    - Hard dependency on Unichest (>= 1.0.10): the mod now routes strictly through Unichests,
+      whose single assigned item type (item + quality, read from inventory slot filters) is what
+      makes routing knowable. Generic linked containers are no longer scanned.
+    - Force-level trash-slot unlock: every force gets at least 10 personal logistics trash slots
+      (a deliberate gameplay intervention; the value persists in the save and is only ever
+      raised, never lowered).
+  Changes:
+    - Request fulfillment now uses a per-pass Unichest index keyed by assigned item type
+      ("item|quality") instead of scanning every linked-container for contents.
+    - Docs updated: README.md and TESTING.md document the Unichest-only contract, the trash
+      rules, and new trash test cases.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.0
 Date: 2026-10-30
   Features:

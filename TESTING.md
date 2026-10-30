@@ -6,8 +6,9 @@ syntax). Please walk through the checklist below in order and report anything
 that deviates from the *Expected outcome* lines.
 
 **Setup for most tests:** a fresh vanilla-ish save with **Unichest** (>=
-1.0.10) and **unichest-logistics** enabled. `/editor` or cheat mode is fine for
-speeding things up (inserters, belts, chests from the cheat menu).
+1.0.10, a hard dependency — the mod will not load without it) and
+**unichest-logistics** enabled. `/editor` or cheat mode is fine for speeding
+things up (inserters, belts, chests from the cheat menu).
 
 ---
 
@@ -89,9 +90,10 @@ when on.
 
 ## 8. No / empty containers — no crash
 
-1. With a request set (below its minimum), ensure there is **no** linked
-   container on your surface. Wait several passes.
-2. Then place a unichest but leave it **empty**. Wait several passes.
+1. With a request set (below its minimum), ensure there is **no** unichest
+   on your surface. Wait several passes.
+2. Then place a unichest but leave it **empty** (and/or with no assigned
+   type). Wait several passes.
 
 **Expected outcome:** no delivery in either case, and — most importantly —
 **no crash / no error in log** (`factorio-current.log` stays clean).
@@ -128,19 +130,67 @@ most one pass apart). A bug where only the first player is served means a bare
 the already-existing player without any research or action. (This guards the
 bug where only newly created players — `on_player_created` — got the unlock.)
 
-## 12. Type-based scan: Warehousing's linked warehouse without Unichest
+## 12. Trash routing into the matching Unichest
 
-1. Disable Unichest; enable **Warehousing** (which provides linked
-   warehouse / linked containers of type `linked-container`).
-2. Repeat test 2 using a Warehousing linked container as the source.
+1. Place a unichest, set its filter to **transport-belt**, and leave it
+   **empty** (or partly filled).
+2. Get a stack of **transport belts** into your personal logistics **trash
+   slots** (drag the stack onto the trash row in the character screen).
+3. Wait up to ~30 ticks (~0.5 s).
 
-**Expected outcome:** fulfillment works identically — the scan is type-based
-(`linked-container`), not tied to Unichest prototypes.
+**Expected outcome:** the trashed belts move **into the unichest** in one
+pass (whole stack, or as much as fits — the remainder stays in the trash slot
+and is delivered on later passes). Item counts add up: nothing is lost or
+duplicated.
+
+## 13. Trash WITHOUT a matching Unichest — untouched
+
+1. Ensure **no** unichest on your surface is assigned to **iron-plate** (no
+   unichest at all is fine).
+2. Drag a stack of **iron plates** into your trash slots.
+3. Wait several 30-tick passes.
+
+**Expected outcome:** the iron plates **stay in the trash slot**, untouched
+and visible — the mod never destroys trash and never moves it back to the main
+inventory. Now assign a unichest to iron-plate; within one pass the stack
+routes into it.
+
+## 14. Equipped armor in trash slots is skipped
+
+1. Craft/find an **armor** (e.g. modular armor), put at least one **equipment
+   module** into its grid.
+2. Drag the equipped armor into your trash slots (a matching unichest target
+   is NOT needed — but you may assign one to the armor item to be thorough).
+3. Wait several 30-tick passes.
+
+**Expected outcome:** the armor **never moves**. Stacks carrying an equipment
+grid are always skipped (no partial moves, no stripping of modules). A
+non-equipped armor with a matching unichest would route normally — the guard
+is on the equipment grid, not on the item.
+
+## 15. Trash slots exist early-game (force unlock, pre-logistic-robotics)
+
+1. Start a fresh save with **no research** done (definitely before
+   logistic robotics).
+2. Open the character screen (E) and look at the personal logistics trash
+   row.
+3. Repeat after adding the mod to an existing save (same as test 11's setup).
+
+**Expected outcome:** the trash row exists with **10 slots** without any
+technology — the mod unlocks `character_trash_slot_count = 10` per force
+(deliberate gameplay intervention; the value persists in the save and is only
+raised, never lowered). This works for existing players/forces too because the
+unlock runs from `on_init`, `on_configuration_changed`, and
+`on_player_created`.
+
+**Related caveat (can't be tested away):** if real vanilla logistics robots
+are active in your game, they will still haul trash-slot items by vanilla
+rules — that is outside this mod's control.
 
 ---
 
 ## Reporting
 
-Please include: Factorio version, mod version, mod list (esp. which
-linked-container mod), and the test numbers that failed with the actual vs
-expected behavior and any lines from `factorio-current.log`.
+Please include: Factorio version, mod version, mod list (esp. the Unichest
+version), and the test numbers that failed with the actual vs expected
+behavior and any lines from `factorio-current.log`.
